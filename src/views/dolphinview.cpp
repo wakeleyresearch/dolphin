@@ -229,6 +229,17 @@ DolphinView::DolphinView(const QUrl &url, QWidget *parent)
 
     KItemListSelectionManager *selectionManager = controller->selectionManager();
     connect(selectionManager, &KItemListSelectionManager::selectionChanged, this, &DolphinView::slotSelectionChanged);
+    connect(selectionManager, &KItemListSelectionManager::currentChanged, this, [this](int current, int previous) {
+        // previous < 0 is the initial highlight when a folder opens.
+        // Arrow keys and later clicks move from one real item to another.
+        if (!m_active || previous < 0) {
+            return;
+        }
+        const KFileItem item = current >= 0 ? m_model->fileItem(current) : KFileItem();
+        if (!item.isNull()) {
+            Q_EMIT currentItemChanged(item);
+        }
+    });
 
 #if HAVE_BALOO
     m_toolTipManager = new ToolTipManager(this);
