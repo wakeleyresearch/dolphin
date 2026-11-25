@@ -48,6 +48,9 @@
 #include <KDialogJobUiDelegate>
 #include <KDualAction>
 #include <KFileItemListProperties>
+
+#include <QDockWidget>
+#include <QResizeEvent>
 #include <KIO/CommandLauncherJob>
 #include <KIO/JobUiDelegateFactory>
 #include <KIO/OpenFileManagerWindowJob>
@@ -208,6 +211,9 @@ DolphinMainWindow::DolphinMainWindow()
 
     const bool usePhoneUi{KRuntimePlatform::runtimePlatform().contains(QLatin1String("phone"))};
     setupGUI(Save | Create | ToolBar, usePhoneUi ? QStringLiteral("dolphinuiforphones.rc") : QString() /* load the default dolphinui.rc file */);
+    if (auto *infoDock = findChild<QDockWidget *>(QStringLiteral("infoDock"))) {
+        infoDock->show();
+    }
     stateChanged(QStringLiteral("new_file"));
 
     QClipboard *clipboard = QApplication::clipboard();
@@ -629,6 +635,29 @@ void DolphinMainWindow::showEvent(QShowEvent *event)
     if (!event->spontaneous() && m_activeViewContainer) {
         m_activeViewContainer->view()->setFocus();
     }
+}
+
+void DolphinMainWindow::resizeEvent(QResizeEvent *event)
+{
+    KXmlGuiWindow::resizeEvent(event);
+
+    // The page preview is the right-hand dock. Keep it at half the window
+    // so the first page grows and shrinks with the window, not only when
+    // the splitter is dragged.
+    if (m_fittingPreviewDock || event->size().width() == event->oldSize().width()) {
+        return;
+    }
+    auto *infoDock = findChild<QDockWidget *>(QStringLiteral("infoDock"));
+    if (!infoDock || !infoDock->isVisible()) {
+        return;
+    }
+    const int target = qBound(280, event->size().width() / 2, event->size().width() - 280);
+    if (qAbs(infoDock->width() - target) < 4) {
+        return;
+    }
+    m_fittingPreviewDock = true;
+    resizeDocks({infoDock}, {target}, Qt::Horizontal);
+    m_fittingPreviewDock = false;
 }
 
 void DolphinMainWindow::closeEvent(QCloseEvent *event)
@@ -2360,6 +2389,7 @@ void DolphinMainWindow::setupDockWidgets()
     addDockWidget(Qt::RightDockWidgetArea, infoDock);
     connect(this, &DolphinMainWindow::urlChanged, infoPanel, &InformationPanel::setUrl);
     connect(this, &DolphinMainWindow::selectionChanged, infoPanel, &InformationPanel::setSelection);
+    connect(this, &DolphinMainWindow::currentItemChanged, infoPanel, &InformationPanel::setHighlightedItem);
     connect(this, &DolphinMainWindow::requestItemInfo, infoPanel, &InformationPanel::requestDelayedItemInfo);
     connect(this, &DolphinMainWindow::fileItemsChanged, infoPanel, &InformationPanel::slotFilesItemChanged);
     connect(this, &DolphinMainWindow::settingsChanged, infoPanel, &InformationPanel::readSettings);
@@ -2777,6 +2807,7 @@ void DolphinMainWindow::connectViewSignals(DolphinViewContainer *container)
 
     const DolphinView *view = container->view();
     connect(view, &DolphinView::selectionChanged, this, &DolphinMainWindow::slotSelectionChanged);
+    connect(view, &DolphinView::currentItemChanged, this, &DolphinMainWindow::currentItemChanged);
     connect(view, &DolphinView::requestItemInfo, this, &DolphinMainWindow::requestItemInfo);
     connect(view, &DolphinView::fileItemsChanged, this, &DolphinMainWindow::fileItemsChanged);
     connect(view, &DolphinView::tabRequested, this, &DolphinMainWindow::openNewTab);
