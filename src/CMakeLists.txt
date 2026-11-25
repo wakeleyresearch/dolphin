@@ -438,9 +438,14 @@ if(HAVE_BALOO)
         panels/information/dolphin_informationpanelsettings.kcfgc
     )
 
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PopplerQt6 REQUIRED IMPORTED_TARGET poppler-qt6)
+
     target_link_libraries(dolphinstatic
         Qt::Multimedia
         Qt::MultimediaWidgets
+        Qt6::Concurrent
+        PkgConfig::PopplerQt6
     )
 endif()
 

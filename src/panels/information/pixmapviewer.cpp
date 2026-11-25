@@ -92,11 +92,25 @@ void PixmapViewer::paintEvent(QPaintEvent *event)
 {
     QWidget::paintEvent(event);
 
+    if (m_pixmap.isNull() || rect().isEmpty()) {
+        return;
+    }
+
     QPainter painter(this);
 
-    if (!m_pixmap.isNull()) {
-        style()->drawItemPixmap(&painter, rect(), Qt::AlignCenter, m_pixmap);
-    }
+    // Fit the page inside the panel without stretching it. Skip the resample
+    // when the pixmap was already rendered at that device-pixel size.
+    const QSize fitted = m_pixmap.size().scaled(rect().size(), Qt::KeepAspectRatio);
+    const qreal dpr = devicePixelRatioF();
+    const QSize sourcePx(qRound(m_pixmap.width() * m_pixmap.devicePixelRatio()), qRound(m_pixmap.height() * m_pixmap.devicePixelRatio()));
+    const QSize destPx(qRound(fitted.width() * dpr), qRound(fitted.height() * dpr));
+    const bool oneToOne = qAbs(sourcePx.width() - destPx.width()) <= 1 && qAbs(sourcePx.height() - destPx.height()) <= 1;
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, !oneToOne);
+    const QPixmap frame = oneToOne ? m_pixmap : m_pixmap.scaled(fitted, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+    const int x = (width() - frame.width()) / 2;
+    const int y = (height() - frame.height()) / 2;
+    painter.drawPixmap(QPoint(x, y), frame);
 }
 
 void PixmapViewer::updateAnimatedImageFrame()

@@ -137,6 +137,15 @@ private:
      */
     void refreshPixmapView();
 
+    /**
+     * Renders a local PDF's first page at the panel's pixel size.
+     * Returns false when the item is not a local PDF.
+     */
+    bool startPdfPreview();
+
+    /** Thumbnail preview used for everything that is not a local PDF. */
+    void startThumbnailPreview();
+
     bool gestureEvent(QGestureEvent *event);
 
 private:
@@ -155,6 +164,11 @@ private:
 
     bool m_isVideo;
     QUrl m_disabledPreviewUrl;
+    // Bumps on every preview request so a late PDF render cannot replace a newer one.
+    quint64 m_pdfGeneration = 0;
+    // Skip a second render of the same page at the same panel size.
+    QString m_pdfPreviewPath;
+    QSize m_pdfPreviewSize;
 };
 
 #endif // INFORMATIONPANELCONTENT_H

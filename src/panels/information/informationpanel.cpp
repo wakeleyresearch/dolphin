@@ -19,6 +19,7 @@
 #include <Baloo/FileMetaDataWidget>
 
 #include <QApplication>
+#include <QCursor>
 #include <QMenu>
 #include <QShowEvent>
 #include <QTimer>
@@ -54,6 +55,12 @@ void InformationPanel::setSelection(const KFileItemList &selection)
         return;
     }
 
+    // The pointer may still be over the previously chosen file. That hover
+    // must not keep the old preview after the selection moves.
+    if (!(m_blockHover && QCursor::pos() == m_highlightCursorPos)) {
+        m_hoveredItem = KFileItem();
+    }
+
     const int count = selection.count();
     if (count == 0) {
         if (!isEqualToShownUrl(url())) {
@@ -69,11 +76,36 @@ void InformationPanel::setSelection(const KFileItemList &selection)
     }
 }
 
+void InformationPanel::setHighlightedItem(const KFileItem &item)
+{
+    if (!isVisible() || !m_content || item.isNull()) {
+        return;
+    }
+
+    m_highlightedItem = item;
+    m_hoveredItem = KFileItem();
+    m_blockHover = true;
+    m_highlightCursorPos = QCursor::pos();
+    if (m_infoTimer) {
+        m_infoTimer->stop();
+    }
+    m_shownUrl = item.url();
+    m_content->showItem(item);
+}
+
 void InformationPanel::requestDelayedItemInfo(const KFileItem &item)
 {
     if (!isVisible() || !InformationPanelSettings::showHovered()) {
         return;
     }
+
+    // Keyboard navigation scrolls the view under a pointer that did not move.
+    // Ignore that hover so the preview stays on the highlighted paper.
+    if (m_blockHover && QCursor::pos() == m_highlightCursorPos) {
+        return;
+    }
+    m_blockHover = false;
+    m_highlightedItem = KFileItem();
 
     if (QApplication::mouseButtons() & Qt::LeftButton) {
         // Ignore the request of an item information when a rubberband
@@ -104,6 +136,8 @@ bool InformationPanel::urlChanged()
 
     cancelRequest();
     m_selection.clear();
+    m_highlightedItem = KFileItem();
+    m_blockHover = false;
 
     if (!isEqualToShownUrl(url())) {
         m_shownUrl = url();
@@ -224,6 +258,12 @@ void InformationPanel::showItemInfo()
 
     cancelRequest();
     //qDebug() << "showItemInfo" << m_fileItem;
+
+    if (m_blockHover && !m_highlightedItem.isNull()) {
+        m_shownUrl = m_highlightedItem.url();
+        m_content->showItem(m_highlightedItem);
+        return;
+    }
 
     if (m_hoveredItem.isNull() && (m_selection.count() > 1)) {
         // The information for a selection of items should be shown

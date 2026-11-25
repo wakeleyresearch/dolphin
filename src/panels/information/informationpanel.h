@@ -10,6 +10,7 @@
 #include "panels/panel.h"
 
 #include <KFileItem>
+#include <QPoint>
 
 class InformationPanelContent;
 namespace KIO
@@ -43,6 +44,12 @@ public Q_SLOTS:
      * set of items.
      */
     void setSelection(const KFileItemList &selection);
+
+    /**
+     * Shows \a item immediately. Arrow keys move this highlight even when
+     * the mouse is still hovering the previously selected file.
+     */
+    void setHighlightedItem(const KFileItem &item);
 
     /**
      * Does a delayed request of information for the item \a item.
@@ -145,6 +152,11 @@ private:
     QUrl m_invalidUrlCandidate;
 
     KFileItem m_hoveredItem;
+    KFileItem m_highlightedItem;
+    // While this is true, hover events caused by the view scrolling under a
+    // stationary pointer must not replace the keyboard highlight.
+    bool m_blockHover = false;
+    QPoint m_highlightCursorPos;
     KFileItemList m_selection;
 
     KIO::Job *m_folderStatJob;

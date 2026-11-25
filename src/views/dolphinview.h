@@ -587,6 +587,12 @@ Q_SIGNALS:
     void requestItemInfo(const KFileItem &item);
 
     /**
+     * Is emitted when arrow keys or a click move the highlighted item.
+     * This is not delayed the way selectionChanged is.
+     */
+    void currentItemChanged(const KFileItem &item);
+
+    /**
      * Is emitted whenever the selection has been changed.
      */
     void selectionChanged(const KFileItemList &selection);

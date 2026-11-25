@@ -25,7 +25,9 @@
 #include <Baloo/FileMetaDataWidget>
 
 #include <QDialogButtonBox>
+#include <QFutureWatcher>
 #include <QGesture>
+#include <QImage>
 #include <QLabel>
 #include <QLinearGradient>
 #include <QPainter>
@@ -33,8 +35,14 @@
 #include <QScrollArea>
 #include <QScroller>
 #include <QTextLayout>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QtConcurrent>
+
+#include <poppler-qt6.h>
+
+#include <memory>
 
 #include "dolphin_informationpanelsettings.h"
 #include "mediawidget.h"
@@ -42,6 +50,64 @@
 
 const int PLAY_ARROW_SIZE = 24;
 const int PLAY_ARROW_BORDER_SIZE = 2;
+// Longest side, in device pixels, that a first-page render is allowed to reach.
+const int PDF_PREVIEW_MAX_DEVICE_PIXELS = 4096;
+
+namespace
+{
+QThreadPool *pdfRenderPool()
+{
+    static QThreadPool pool;
+    pool.setMaxThreadCount(1);
+    return &pool;
+}
+
+QImage renderPdfFirstPage(const QString &path, const QSize &logicalSize, qreal dpr)
+{
+    if (path.isEmpty() || logicalSize.isEmpty()) {
+        return {};
+    }
+
+    dpr = qMax(qreal(1), dpr);
+    std::unique_ptr<Poppler::Document> document = Poppler::Document::load(path);
+    if (!document || document->isLocked()) {
+        return {};
+    }
+
+    document->setRenderHint(Poppler::Document::Antialiasing, true);
+    document->setRenderHint(Poppler::Document::TextAntialiasing, true);
+
+    std::unique_ptr<Poppler::Page> page = document->page(0);
+    if (!page) {
+        return {};
+    }
+
+    const QSizeF points = page->pageSizeF();
+    if (points.isEmpty()) {
+        return {};
+    }
+
+    int targetW = qMax(1, qRound(logicalSize.width() * dpr));
+    int targetH = qMax(1, qRound(logicalSize.height() * dpr));
+    const qreal capScale = qMin(qreal(1), qMin(qreal(PDF_PREVIEW_MAX_DEVICE_PIXELS) / targetW, qreal(PDF_PREVIEW_MAX_DEVICE_PIXELS) / targetH));
+    targetW = qMax(1, qRound(targetW * capScale));
+    targetH = qMax(1, qRound(targetH * capScale));
+
+    const qreal scale = qMin(targetW / points.width(), targetH / points.height());
+    if (!(scale > 0)) {
+        return {};
+    }
+
+    QImage image = page->renderToImage(72.0 * scale, 72.0 * scale);
+    if (image.isNull()) {
+        return {};
+    }
+
+    // Logical size stays the fitted panel size, so the painter does not scale it.
+    image.setDevicePixelRatio(dpr * capScale);
+    return image;
+}
+}
 
 InformationPanelContent::InformationPanelContent(QWidget *parent)
     : QWidget(parent)
@@ -66,6 +132,8 @@ InformationPanelContent::InformationPanelContent(QWidget *parent)
     connect(m_outdatedPreviewTimer, &QTimer::timeout, this, &InformationPanelContent::markOutdatedPreview);
 
     QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
     // preview
     const int minPreviewWidth = KIconLoader::SizeEnormous + KIconLoader::SizeMedium;
@@ -73,6 +141,7 @@ InformationPanelContent::InformationPanelContent(QWidget *parent)
     m_preview = new PixmapViewer(parent);
     m_preview->setMinimumWidth(minPreviewWidth);
     m_preview->setMinimumHeight(KIconLoader::SizeEnormous);
+    m_preview->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     m_mediaWidget = new MediaWidget(parent);
     m_mediaWidget->hide();
@@ -136,13 +205,15 @@ InformationPanelContent::InformationPanelContent(QWidget *parent)
     QScroller::grabGesture(viewport, QScroller::TouchGesture);
     viewport->installEventFilter(this);
 
-    layout->addWidget(m_preview);
-    layout->addWidget(m_mediaWidget);
-    layout->addWidget(m_nameLabel);
-    layout->addWidget(new KSeparator());
-    layout->addWidget(m_configureLabel);
-    layout->addWidget(m_metaDataArea);
-    layout->addWidget(m_configureButtons);
+    // The panel is the first page only. Name, separator, and metadata stay
+    // constructed so the rest of the panel code still has them, but they are
+    // not placed in the layout.
+    layout->addWidget(m_preview, 1);
+    layout->addWidget(m_mediaWidget, 1);
+    m_nameLabel->hide();
+    m_metaDataArea->hide();
+    m_configureLabel->hide();
+    m_configureButtons->hide();
 
     grabGesture(Qt::TapAndHoldGesture);
 }
@@ -175,16 +246,87 @@ void InformationPanelContent::refreshPixmapView()
     // Reset disabled state when starting a new preview job
     m_disabledPreviewUrl.clear();
 
-    // try to get a preview pixmap from the item...
+    if (startPdfPreview()) {
+        return;
+    }
+    m_pdfPreviewPath.clear();
+    m_pdfPreviewSize = QSize();
+    ++m_pdfGeneration;
+    startThumbnailPreview();
+}
 
-    // Mark the currently shown preview as outdated. This is done
-    // with a small delay to prevent a flickering when the next preview
-    // can be shown within a short timeframe.
+bool InformationPanelContent::startPdfPreview()
+{
+    if (!m_item.isLocalFile()) {
+        return false;
+    }
+
+    const QString mimeType = m_item.mimetype();
+    if (mimeType != QLatin1String("application/pdf") && mimeType != QLatin1String("application/x-pdf")) {
+        return false;
+    }
+
+    const QString path = m_item.localPath();
+    if (path.isEmpty()) {
+        return false;
+    }
+
+    // KIO's thumbnail cache tops out around 1024px and the panel then
+    // stretches that bitmap. Draw the first page at the panel's own pixels.
+    QSize requestSize = m_preview->size();
+    requestSize = requestSize.expandedTo(QSize(1, 1));
+    if (path == m_pdfPreviewPath && requestSize == m_pdfPreviewSize) {
+        return true;
+    }
+
+    ++m_pdfGeneration;
+    m_pdfPreviewPath = path;
+    m_pdfPreviewSize = requestSize;
+    const qreal dpr = devicePixelRatioF();
+    const quint64 generation = m_pdfGeneration;
+
+    // Keep the current frame until the sharp page arrives. Greying it for
+    // the duration of the render just flashes a soft image.
+    m_outdatedPreviewTimer->stop();
+
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, watcher, generation]() {
+        const QImage image = watcher->result();
+        watcher->deleteLater();
+        if (generation != m_pdfGeneration) {
+            return;
+        }
+        if (image.isNull()) {
+            if (generation == m_pdfGeneration) {
+                m_pdfPreviewPath.clear();
+                m_pdfPreviewSize = QSize();
+            }
+            startThumbnailPreview();
+            return;
+        }
+        m_outdatedPreviewTimer->stop();
+        m_disabledPreviewUrl.clear();
+        m_preview->setPixmap(QPixmap::fromImage(image));
+    });
+    watcher->setFuture(QtConcurrent::run(pdfRenderPool(), [path, requestSize, dpr]() {
+        return renderPdfFirstPage(path, requestSize, dpr);
+    }));
+    return true;
+}
+
+void InformationPanelContent::startThumbnailPreview()
+{
+    const quint64 generation = m_pdfGeneration;
     m_outdatedPreviewTimer->start();
 
     const KConfigGroup globalConfig(KSharedConfig::openConfig(), "PreviewSettings");
     const QStringList plugins = globalConfig.readEntry("Plugins", KIO::PreviewJob::defaultPlugins());
-    m_previewJob = new KIO::PreviewJob(KFileItemList() << m_item, QSize(m_preview->width(), m_preview->height()), &plugins);
+    QSize requestSize = m_preview->size();
+    if (QWidget *panel = parentWidget()) {
+        requestSize = requestSize.expandedTo(panel->contentsRect().size());
+    }
+    requestSize = requestSize.expandedTo(QSize(1, 1));
+    m_previewJob = new KIO::PreviewJob(KFileItemList() << m_item, requestSize, &plugins);
     m_previewJob->setScaleType(KIO::PreviewJob::Unscaled);
     m_previewJob->setIgnoreMaximumSize(m_item.isLocalFile() && !m_item.isSlow());
     m_previewJob->setDevicePixelRatio(devicePixelRatioF());
@@ -192,8 +334,18 @@ void InformationPanelContent::refreshPixmapView()
         KJobWidgets::setWindow(m_previewJob, this);
     }
 
-    connect(m_previewJob.data(), &KIO::PreviewJob::gotPreview, this, &InformationPanelContent::showPreview);
-    connect(m_previewJob.data(), &KIO::PreviewJob::failed, this, &InformationPanelContent::showIcon);
+    connect(m_previewJob.data(), &KIO::PreviewJob::gotPreview, this, [this, generation](const KFileItem &item, const QPixmap &pixmap) {
+        if (generation != m_pdfGeneration) {
+            return;
+        }
+        showPreview(item, pixmap);
+    });
+    connect(m_previewJob.data(), &KIO::PreviewJob::failed, this, [this, generation](const KFileItem &item) {
+        if (generation != m_pdfGeneration) {
+            return;
+        }
+        showIcon(item);
+    });
 }
 
 void InformationPanelContent::refreshPreview()
@@ -486,23 +638,14 @@ void InformationPanelContent::setNameLabelText(const QString &text)
 
 void InformationPanelContent::adjustWidgetSizes(int width)
 {
-    // If the text inside the name label or the info label cannot
-    // get wrapped, then the maximum width of the label is increased
-    // so that the width of the information panel gets increased.
-    // To prevent this, the maximum width is adjusted to
-    // the current width of the panel.
-    const int maxWidth = width - style()->layoutSpacing(QSizePolicy::DefaultType, QSizePolicy::DefaultType, Qt::Horizontal) * 4;
+    const int maxWidth = qMax(1, width);
+    const int maxHeight = qMax(1, parentWidget() ? parentWidget()->height() : maxWidth);
     m_nameLabel->setMaximumWidth(maxWidth);
-
-    // The metadata widget also contains a text widget which may return
-    // a large preferred width.
     m_metaDataWidget->setMaximumWidth(maxWidth);
 
-    // try to increase the preview as large as possible
-    m_preview->setSizeHint(QSize(maxWidth, maxWidth));
-
-    // assure that the size of the video player is the same as the preview size
-    m_mediaWidget->setVideoSize(QSize(maxWidth, maxWidth));
+    // Fill the dock in both directions. The dock itself tracks the window.
+    m_preview->setSizeHint(QSize(maxWidth, maxHeight));
+    m_mediaWidget->setVideoSize(QSize(maxWidth, maxHeight));
 }
 
 #include "moc_informationpanelcontent.cpp"

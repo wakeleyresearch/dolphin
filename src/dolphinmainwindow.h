@@ -236,6 +236,12 @@ Q_SIGNALS:
     void selectionChanged(const KFileItemList &selection);
 
     /**
+     * The item the keyboard or last click is highlighting.
+     * Arrow keys move this without waiting for the selection delay.
+     */
+    void currentItemChanged(const KFileItem &item);
+
+    /**
      * Is sent if the url of the currently active view has
      * been changed.
      */
@@ -264,6 +270,9 @@ protected:
 
     /** @see QWidget::showEvent() */
     void showEvent(QShowEvent *event) override;
+
+    /** @see QMainWindow::resizeEvent() */
+    void resizeEvent(QResizeEvent *event) override;
 
     /** @see QMainWindow::closeEvent() */
     void closeEvent(QCloseEvent *event) override;
@@ -788,6 +797,7 @@ private:
     TerminalPanel *m_terminalPanel;
     PlacesPanel *m_placesPanel;
     bool m_tearDownFromPlacesRequested;
+    bool m_fittingPreviewDock = false;
 
     KToolBarPopupAction *m_backAction;
     KToolBarPopupAction *m_forwardAction;

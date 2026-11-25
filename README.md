@@ -1,5 +1,9 @@
 # Dolphin
 
+Authors: Peter Penz, Stefan Monov, Cvetoslav Ludmiloff, Gregor Kališnik, and the KDE Dolphin contributors.
+
+Base repository: https://github.com/KDE/dolphin
+
 Dolphin is KDE's file manager that lets you navigate and browse the contents of your hard drives, USB sticks, SD cards, and more. Creating, moving, or deleting files and folders is simple and fast. See more information [on Dolphin's homepage](https://apps.kde.org/dolphin/).
 
 ![Screenshot](https://cdn.kde.org/screenshots/dolphin/dolphin.png)
