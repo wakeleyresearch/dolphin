@@ -1,0 +1,145 @@
+/*
+ * SPDX-FileCopyrightText: 2006-2010 Peter Penz <peter.penz19@gmail.com>
+ * SPDX-FileCopyrightText: 2006 Gregor Kališnik <gregor@podnapisi.net>
+ * SPDX-FileCopyrightText: 2012 Stuart Citrin <ctrn3e8@gmail.com>
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "filterbar.h"
+
+#include <KLocalizedString>
+
+#include <QApplication>
+#include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QLineEdit>
+#include <QToolButton>
+
+FilterBar::FilterBar(QWidget *parent)
+    : AnimatedHeightWidget{parent}
+{
+    QWidget *contentsContainer = prepareContentsContainer();
+
+    // Create button to lock text when changing folders
+    m_lockButton = new QToolButton(contentsContainer);
+    m_lockButton->setAutoRaise(true);
+    m_lockButton->setCheckable(true);
+    m_lockButton->setIcon(QIcon::fromTheme(QStringLiteral("object-unlocked")));
+    m_lockButton->setToolTip(i18nc("@info:tooltip", "Keep Filter When Changing Folders"));
+    connect(m_lockButton, &QToolButton::toggled, this, &FilterBar::slotToggleLockButton);
+
+    // Create filter editor
+    m_filterInput = new QLineEdit(contentsContainer);
+    m_filterInput->setLayoutDirection(Qt::LeftToRight);
+    m_filterInput->setClearButtonEnabled(true);
+    m_filterInput->setPlaceholderText(i18n("Filter…"));
+    connect(m_filterInput, &QLineEdit::textChanged, this, &FilterBar::filterChanged);
+    setFocusProxy(m_filterInput);
+
+    // Create close button
+    QToolButton *closeButton = new QToolButton(contentsContainer);
+    closeButton->setAutoRaise(true);
+    closeButton->setIcon(QIcon::fromTheme(QStringLiteral("dialog-close")));
+    closeButton->setToolTip(i18nc("@info:tooltip", "Hide Filter Bar"));
+    connect(closeButton, &QToolButton::clicked, this, &FilterBar::closeRequest);
+
+    // Apply layout
+    QHBoxLayout *hLayout = new QHBoxLayout(contentsContainer);
+    hLayout->setContentsMargins(0, 0, 0, 0);
+    hLayout->addWidget(m_lockButton);
+    hLayout->addWidget(m_filterInput);
+    hLayout->addWidget(closeButton);
+
+    setTabOrder(m_lockButton, closeButton);
+    setTabOrder(closeButton, m_filterInput);
+}
+
+FilterBar::~FilterBar()
+{
+}
+
+void FilterBar::closeFilterBar()
+{
+    setVisible(false, WithAnimation);
+    clear();
+    if (m_lockButton) {
+        m_lockButton->setChecked(false);
+    }
+}
+
+void FilterBar::selectAll()
+{
+    m_filterInput->selectAll();
+}
+
+void FilterBar::clear()
+{
+    m_filterInput->clear();
+}
+
+void FilterBar::clearIfUnlocked()
+{
+    if (!m_lockButton || !(m_lockButton->isChecked())) {
+        clear();
+    }
+}
+
+void FilterBar::slotToggleLockButton(bool checked)
+{
+    if (checked) {
+        m_lockButton->setIcon(QIcon::fromTheme(QStringLiteral("object-locked")));
+    } else {
+        m_lockButton->setIcon(QIcon::fromTheme(QStringLiteral("object-unlocked")));
+        clear();
+    }
+}
+
+void FilterBar::showEvent(QShowEvent *event)
+{
+    if (!event->spontaneous()) {
+        m_filterInput->setFocus();
+    }
+}
+
+void FilterBar::keyPressEvent(QKeyEvent *event)
+{
+    switch (event->key()) {
+    case Qt::Key_Escape:
+        if (m_filterInput->text().isEmpty()) {
+            Q_EMIT closeRequest();
+        } else {
+            m_filterInput->clear();
+        }
+        return;
+
+    case Qt::Key_Enter:
+    case Qt::Key_Return:
+        Q_EMIT focusViewRequest();
+        return;
+
+    case Qt::Key_Down:
+    case Qt::Key_PageDown:
+    case Qt::Key_Up:
+    case Qt::Key_PageUp: {
+        Q_EMIT focusViewRequest();
+        QWidget *focusWidget = QApplication::focusWidget();
+        if (focusWidget && focusWidget != this) {
+            QApplication::sendEvent(focusWidget, event);
+        }
+        return;
+    }
+
+    default:
+        break;
+    }
+
+    QWidget::keyPressEvent(event);
+}
+
+int FilterBar::preferredHeight() const
+{
+    return std::max(m_filterInput->sizeHint().height(), m_lockButton->sizeHint().height());
+}
+
+#include "moc_filterbar.cpp"
